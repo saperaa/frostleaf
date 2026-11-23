@@ -1,0 +1,13 @@
+# Pinned versions, tested 2026-11-23 on a fresh Python 3.12 env (Colab's version).
+# Install with:
+#   pip install -r requirements.txt
+tensorflow==2.21.0
+keras==3.15.1
+numpy==2.5.3
+pandas==3.0.5
+scikit-learn==1.9.1
+matplotlib==3.11.2
+PyYAML==6.0.3
+pytest==9.1.1
+datasets==5.2.0   # Hugging Face, for downloading PlantVillage
+gradio==6.32.0    # demo app

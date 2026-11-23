@@ -1,0 +1,11 @@
+# data and large artifacts stay out of git
+data/raw/
+data/processed/
+models/*.keras
+models/*.pkl
+!models/.gitkeep
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.env

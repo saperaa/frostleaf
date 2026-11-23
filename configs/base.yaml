@@ -1,0 +1,24 @@
+# Reference configuration. Every experiment config overrides ONE factor from this.
+seed: 42
+data:
+  source: plantvillage        # Hugging Face: mohanty/PlantVillage
+  variant: color              # color | segmented | grayscale
+  image_size: 224
+  val_fraction: 0.15          # carved from the official train split, grouped by leaf
+  train_fraction_used: 1.0    # set < 1.0 for the low-data setting
+  augmentation: [flip, rotate]
+  class_weights: true
+model:
+  name: model_c_finetune      # model_a_scratch | model_b_frozen | model_c_finetune
+  dropout: 0.3
+  unfreeze_last_block: true
+train:
+  optimizer: adam             # sgd | sgd_momentum | adam
+  lr: 1.0e-5
+  batch_size: 32
+  epochs: 30
+  early_stopping_patience: 5
+precision:
+  mode: fp32                  # fp32 | mixed | bf16_rtn | bf16_sr
+  weight_decay: 0.0
+  decay_mode: fused           # fused | separate
