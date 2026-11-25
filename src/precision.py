@@ -34,6 +34,8 @@ Weight-decay placement (only used when ``weight_decay > 0``)
 
 from __future__ import annotations
 
+import inspect
+
 import keras
 import tensorflow as tf
 
@@ -78,6 +80,24 @@ def stochastic_round_to_bf16(x: tf.Tensor, seed: tf.Tensor) -> tf.Tensor:
     return tf.bitcast(rounded, tf.float32)
 
 
+def _training_fixed_at_build(op, stored_training) -> bool:
+    """True if ``op`` was called with an explicit ``training`` value in the graph.
+
+    Args:
+        op: a layer (or nested model) from a functional graph.
+        stored_training: the ``training`` value Keras stored for that call.
+
+    Returns:
+        Whether the stored value differs from the layer's own signature default,
+        i.e. whether the user passed it when building the model.
+    """
+    if stored_training is None or not hasattr(op, "call"):
+        return False
+    param = inspect.signature(op.call).parameters.get("training")
+    default = None if param is None or param.default is param.empty else param.default
+    return stored_training != default
+
+
 class PrecisionModel(keras.Model):
     """Functional Keras model whose train step simulates bf16 weight storage.
 
@@ -95,6 +115,23 @@ class PrecisionModel(keras.Model):
     * ``update_ratio``: mean |applied update| / mean |intended update|
       (1.0 means nothing was lost; near 0 means training has stalled).
 
+    Per-group metrics (optional). Weights of different sizes freeze at
+    different learning rates: half a bf16 ULP is proportional to the weight's
+    magnitude, so the same update can survive in a small-weight head and vanish
+    in a large-weight backbone. Pass ``variable_groups`` to see this::
+
+        model = PrecisionModel(
+            inputs, outputs, precision="bf16_rtn",
+            variable_groups={"backbone": [base_model], "head": [dense]},
+        )
+
+    Each value is a list of layers (all their weights) and/or individual
+    variables. Every group ``g`` adds ``freeze_rate_g`` and ``update_ratio_g``
+    next to the overall metrics, which still cover all trainable weights.
+    Weights in no group count only towards the overall metrics. A group with no
+    trainable weights at the moment (e.g. a frozen backbone) reports 0.
+    With ``variable_groups=None`` (the default) nothing changes.
+
     Note: only trainable weights are rounded. Non-trainable state such as
     BatchNorm moving statistics is left in float32; freeze BatchNorm with
     ``training=False`` during fine-tuning so those statistics do not change.
@@ -107,6 +144,7 @@ class PrecisionModel(keras.Model):
         weight_decay: float = 0.0,
         decay_mode: str = "fused",
         rounding_seed: int = 0,
+        variable_groups: dict[str, list] | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -122,6 +160,54 @@ class PrecisionModel(keras.Model):
         self.freeze_tracker = keras.metrics.Mean(name="freeze_rate")
         self.update_ratio_tracker = keras.metrics.Mean(name="update_ratio")
 
+        # Per-group trackers: group name -> (freeze_rate_<g>, update_ratio_<g>).
+        self._variable_groups = self._validate_groups(variable_groups)
+        self.group_trackers = {
+            group: (
+                keras.metrics.Mean(name=f"freeze_rate_{group}"),
+                keras.metrics.Mean(name=f"update_ratio_{group}"),
+            )
+            for group in self._variable_groups
+        }
+
+    @staticmethod
+    def _validate_groups(variable_groups: dict[str, list] | None) -> dict[str, list]:
+        """Check the ``variable_groups`` argument and return it as a plain dict."""
+        if variable_groups is None:
+            return {}
+        if not isinstance(variable_groups, dict):
+            raise TypeError("variable_groups must be a dict {group_name: [layers or variables]}")
+        for group, members in variable_groups.items():
+            if not isinstance(group, str) or not group.isidentifier():
+                raise ValueError(f"group name {group!r} must be a valid identifier, e.g. 'head'")
+            if isinstance(members, (keras.layers.Layer, keras.Variable)):
+                raise TypeError(f"group {group!r}: wrap the layer or variable in a list")
+            for member in members:
+                if not isinstance(member, (keras.layers.Layer, keras.Variable)):
+                    raise TypeError(
+                        f"group {group!r}: members must be Keras layers or variables, "
+                        f"got {type(member).__name__}"
+                    )
+        return dict(variable_groups)
+
+    def _group_lookup(self) -> dict[int, str]:
+        """Map ``id(variable)`` to its group name for every grouped variable.
+
+        Resolved when the train step is traced (not in ``__init__``), so layers
+        unfrozen after construction, as in Model C, are picked up.
+        """
+        lookup: dict[int, str] = {}
+        for group, members in self._variable_groups.items():
+            for member in members:
+                weights = member.weights if isinstance(member, keras.layers.Layer) else [member]
+                for var in weights:
+                    other = lookup.setdefault(id(var), group)
+                    if other != group:
+                        raise ValueError(
+                            f"variable {var.path} is in both group {other!r} and {group!r}"
+                        )
+        return lookup
+
     def compile(self, *args, **kwargs):
         """Compile, refusing optimizers that apply their own weight decay.
 
@@ -136,6 +222,45 @@ class PrecisionModel(keras.Model):
                 "Set the optimizer's weight_decay to None and pass weight_decay= "
                 "to PrecisionModel, so decay placement is controlled explicitly."
             )
+
+    # --------------------------------------------------------- training flag
+
+    def _run_through_graph(self, inputs, operation_fn=lambda op: op, call_fn=None):
+        """Run the functional graph, honouring ``training`` fixed at build time.
+
+        Keras 3 (checked on 3.15.1) overwrites the ``training`` value stored for
+        each layer call with the one the whole model is called with. So
+        ``bn(x, training=False)`` or ``base_model(x, training=False)`` still
+        runs in training mode inside ``fit()``, and BatchNorm moving statistics
+        silently drift during fine-tuning. Here an explicit ``training`` value
+        given when the graph was built wins (the Keras 2 behaviour); layers
+        built without one (Dropout, Dense, ...) still follow the model's mode.
+
+        Keras also stores each layer's signature default (e.g. Dropout's
+        ``training=False``), so a stored value counts as explicit only when it
+        differs from that default. Limitation: passing a layer's own default
+        explicitly (e.g. ``Dropout(...)(x, training=False)``) is not detected.
+
+        tests/test_precision.py::test_batchnorm_stats_frozen_with_training_false
+        and ::test_nested_base_training_false_but_dropout_still_active guard
+        this; re-run them after any Keras upgrade.
+        """
+        if call_fn is not None:  # graph inspection, not execution: leave as is
+            return super()._run_through_graph(inputs, operation_fn, call_fn)
+
+        def honour_explicit_training(op):
+            """Wrap ``op`` so a build-time ``training`` value is not overwritten."""
+            injected = operation_fn(op)
+
+            def call(*args, **kwargs):
+                """Call ``op`` as built, or with the model's training flag injected."""
+                if _training_fixed_at_build(op, kwargs.get("training")):
+                    return op(*args, **kwargs)
+                return injected(*args, **kwargs)
+
+            return call
+
+        return super()._run_through_graph(inputs, honour_explicit_training, call_fn)
 
     # ------------------------------------------------------------------ utils
 
@@ -173,6 +298,10 @@ class PrecisionModel(keras.Model):
         intended_mag = tf.constant(0.0)
         applied_mag = tf.constant(0.0)
 
+        # Per-group sums, in the same order: [wanted, frozen, intended, applied].
+        lookup = self._group_lookup()
+        group_sums = {group: [tf.constant(0.0)] * 4 for group in self._variable_groups}
+
         for i, (var, old) in enumerate(zip(variables, old_values)):
             decay = lr * self.weight_decay * old
             if self.decay_mode == "fused" or self.weight_decay == 0.0:
@@ -185,16 +314,36 @@ class PrecisionModel(keras.Model):
 
             tried = tf.not_equal(intended, old)
             stuck = tf.logical_and(tried, tf.equal(new, old))
-            wanted += tf.reduce_sum(tf.cast(tried, tf.float32))
-            frozen += tf.reduce_sum(tf.cast(stuck, tf.float32))
-            intended_mag += tf.reduce_sum(tf.abs(intended - old))
-            applied_mag += tf.reduce_sum(tf.abs(new - old))
+            var_stats = (
+                tf.reduce_sum(tf.cast(tried, tf.float32)),
+                tf.reduce_sum(tf.cast(stuck, tf.float32)),
+                tf.reduce_sum(tf.abs(intended - old)),
+                tf.reduce_sum(tf.abs(new - old)),
+            )
+            wanted += var_stats[0]
+            frozen += var_stats[1]
+            intended_mag += var_stats[2]
+            applied_mag += var_stats[3]
+
+            group = lookup.get(id(var))
+            if group is not None:
+                group_sums[group] = [s + v for s, v in zip(group_sums[group], var_stats)]
 
         self._step.assign_add(1)
         self.freeze_tracker.update_state(tf.math.divide_no_nan(frozen, wanted))
         self.update_ratio_tracker.update_state(tf.math.divide_no_nan(applied_mag, intended_mag))
 
-        own = (self.freeze_tracker, self.update_ratio_tracker)
+        trainable_groups = set(lookup.get(id(v)) for v in variables)
+        for group, (freeze_t, ratio_t) in self.group_trackers.items():
+            if group not in trainable_groups:
+                continue  # nothing trainable in this group (e.g. frozen backbone)
+            g_wanted, g_frozen, g_intended, g_applied = group_sums[group]
+            freeze_t.update_state(tf.math.divide_no_nan(g_frozen, g_wanted))
+            ratio_t.update_state(tf.math.divide_no_nan(g_applied, g_intended))
+
+        own = [self.freeze_tracker, self.update_ratio_tracker]
+        for trackers in self.group_trackers.values():
+            own.extend(trackers)
         for metric in self.metrics:  # Keras auto-tracks our two trackers too
             if any(metric is m for m in own):
                 continue
