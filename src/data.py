@@ -467,7 +467,10 @@ def load_plantvillage(variant: str = "color", cfg: dict | None = None,
 
     Returns:
         (train_ds, val_ds, test_ds, class_names): batched tf.data.Datasets of
-        (image in [0, 1], int label); only train_ds is shuffled and augmented.
+        (image in [0, 1], int label); only train_ds is shuffled and augmented
+        (pass a cfg with `data.augmentation: []` for an unaugmented train set).
+        val_ds and test_ds have a fixed order with the classes mixed (sorted
+        by file hash), so `.take(n)` gives a representative subset.
         For the label arrays (e.g. class weights) use `load_split_tables()`.
     """
     cfg = cfg or _default_config()
@@ -479,6 +482,10 @@ def load_plantvillage(variant: str = "color", cfg: dict | None = None,
     out = []
     for name, source in (("train", "train"), ("val", "train"), ("test", "test")):
         meta = splits[name]
+        if name != "train":
+            # The source order is grouped by class; a fixed hash order mixes the
+            # classes, so taking the first N examples is still representative.
+            meta = meta.sort_values("file_hash", kind="stable").reset_index(drop=True)
         part = hf[source]
         rows = meta["row"].to_numpy()
 
