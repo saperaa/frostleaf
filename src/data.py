@@ -40,6 +40,7 @@ from src.config import PROJECT_ROOT, load_config
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 RAW_DIR = os.path.join(DATA_DIR, "raw")
 SPLITS_DIR = os.path.join(DATA_DIR, "splits")
+CACHE_DIR = os.path.join(DATA_DIR, "cache")  # decoded-image caches (git-ignored)
 PLANTDOC_DIR = os.path.join(RAW_DIR, "plantdoc")
 PLANTDOC_BOXES_DIR = os.path.join(RAW_DIR, "plantdoc_boxes")
 PLANTDOC_CLASS_MAP = os.path.join(DATA_DIR, "plantdoc_class_map.csv")
@@ -400,7 +401,8 @@ def build_augmentation(names: list[str]):
 
 def make_dataset(images, labels, *, training: bool, image_size: int | None = None,
                  batch_size: int = 32, augmentation: list[str] | None = None,
-                 seed: int = 42, shuffle: bool | None = None):
+                 seed: int = 42, shuffle: bool | None = None, cache: str | None = None,
+                 shuffle_buffer: int = 2048):
     """Build a batched tf.data pipeline: decode/preprocess, and augment only if training.
 
     Args:
@@ -412,6 +414,14 @@ def make_dataset(images, labels, *, training: bool, image_size: int | None = Non
         image_size, batch_size, seed: pipeline settings.
         augmentation: augmentation names (used only when `training`).
         shuffle: override shuffling (defaults to `training`).
+        cache: optional file prefix (e.g. ``data/cache/color_train``). The
+            decoded uint8 images are written there during the first full pass
+            and read back on later epochs, so JPEG decoding and the Python
+            fetch happen once. The cache holds images BEFORE `preprocess`, so
+            resizing and scaling stay identical to the uncached path and to
+            `predict.py`. Only used with a callable `images`.
+        shuffle_buffer: with `cache`, the cache is written in one random order
+            (seeded) and each epoch is reshuffled with a buffer of this size.
 
     Returns:
         A `tf.data.Dataset` of (float32 images in [0, 1], int32 labels).
@@ -422,7 +432,24 @@ def make_dataset(images, labels, *, training: bool, image_size: int | None = Non
     shuffle = training if shuffle is None else shuffle
     size = _image_size(image_size)
 
-    if callable(images):
+    if callable(images) and cache:
+        fetch = images
+        order = np.random.default_rng(seed).permutation(len(labels)) if shuffle else np.arange(len(labels))
+
+        def generate_fixed():
+            """Yield (encoded bytes, label) in one fixed order, so the cache is reusable."""
+            for i in order:
+                yield fetch(int(i)), labels[i]
+
+        os.makedirs(os.path.dirname(os.path.abspath(cache)), exist_ok=True)
+        ds = tf.data.Dataset.from_generator(generate_fixed, output_signature=(
+            tf.TensorSpec((), tf.string), tf.TensorSpec((), tf.int32)))
+        ds = ds.map(lambda b, y: (decode_image(b), y), num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.cache(cache)
+        if shuffle:
+            ds = ds.shuffle(shuffle_buffer, seed=seed, reshuffle_each_iteration=True)
+        ds = ds.map(lambda x, y: (preprocess(x, size), y), num_parallel_calls=tf.data.AUTOTUNE)
+    elif callable(images):
         fetch = images
         rng = np.random.default_rng(seed)
 
@@ -447,6 +474,14 @@ def make_dataset(images, labels, *, training: bool, image_size: int | None = Non
         augment = build_augmentation(augmentation)
         ds = ds.map(lambda x, y: (augment(x, training=True), y), num_parallel_calls=tf.data.AUTOTUNE)
     return ds.prefetch(tf.data.AUTOTUNE)
+
+
+def _cache_path(variant: str, split: str, seed: int) -> str:
+    """Cache file prefix for one split. The train cache is written in a seeded
+    order, so it is keyed by seed; val and test are stored in split order.
+    Delete data/cache/ whenever data/splits/ changes."""
+    suffix = f"_s{seed}" if split == "train" else ""
+    return os.path.join(CACHE_DIR, f"{variant}_{split}{suffix}")
 
 
 def load_plantvillage(variant: str = "color", cfg: dict | None = None,
@@ -496,7 +531,8 @@ def load_plantvillage(variant: str = "color", cfg: dict | None = None,
         ds = make_dataset(
             fetch, meta["label"].map(index).to_numpy(), training=(name == "train"),
             image_size=cfg["data"]["image_size"], batch_size=cfg["train"]["batch_size"],
-            augmentation=cfg["data"].get("augmentation") or [], seed=cfg["seed"])
+            augmentation=cfg["data"].get("augmentation") or [], seed=cfg["seed"],
+            cache=(_cache_path(variant, name, cfg["seed"]) if cfg["data"].get("cache") else None))
         out.append(ds)
     return out[0], out[1], out[2], class_names
 

@@ -156,7 +156,6 @@ class PrecisionModel(keras.Model):
         self.weight_decay = float(weight_decay)
         self.decay_mode = decay_mode
         self._rounding_seed = rounding_seed
-        self._step = tf.Variable(0, dtype=tf.int32, trainable=False, name="rounding_step")
         self.freeze_tracker = keras.metrics.Mean(name="freeze_rate")
         self.update_ratio_tracker = keras.metrics.Mean(name="update_ratio")
 
@@ -270,7 +269,12 @@ class PrecisionModel(keras.Model):
             return x
         if self.precision == "bf16_rtn":
             return round_to_bf16(x)
-        seed = tf.stack([tf.constant(self._rounding_seed, tf.int32) + salt, self._step])
+        # The per-step part of the seed is the optimizer's own step counter. A
+        # separate tf.Variable counter was placed on the CPU and broke XLA
+        # compilation on GPU (#11); optimizer.iterations is a Keras variable
+        # that Keras places correctly. Before training it is 0.
+        step = tf.cast(self.optimizer.iterations, tf.int32) if self.optimizer is not None else 0
+        seed = tf.stack([tf.constant(self._rounding_seed, tf.int32) + salt, tf.constant(0) + step])
         return stochastic_round_to_bf16(x, seed)
 
     def quantize_weights(self) -> None:
@@ -329,7 +333,6 @@ class PrecisionModel(keras.Model):
             if group is not None:
                 group_sums[group] = [s + v for s, v in zip(group_sums[group], var_stats)]
 
-        self._step.assign_add(1)
         self.freeze_tracker.update_state(tf.math.divide_no_nan(frozen, wanted))
         self.update_ratio_tracker.update_state(tf.math.divide_no_nan(applied_mag, intended_mag))
 

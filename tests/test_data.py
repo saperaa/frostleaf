@@ -250,3 +250,50 @@ def test_plantdoc_crops_skip_boxes_drawn_on_a_rotated_image(tmp_path):
             CLASSES, mode="crops", plantdoc_dir=tmp_path / "plantdoc", boxes_dir=tmp_path / "boxes",
             class_map_path=tmp_path / "map.csv", exclude_path=tmp_path / "exclude.csv")
     assert "train/Corn rust leaf/c1.jpg" not in set(examples["rel_path"])
+
+
+def test_cached_pipeline_matches_uncached(tmp_path):
+    """The decoded-image cache must not change what the model sees."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from src.data import make_dataset
+
+    rng = np.random.default_rng(0)
+    blobs = []
+    for _ in range(12):
+        buf = io.BytesIO()
+        Image.fromarray(rng.integers(0, 256, (40, 40, 3), dtype=np.uint8)).save(buf, "PNG")
+        blobs.append(buf.getvalue())
+    labels = np.arange(12) % 3
+    plain = make_dataset(lambda i: blobs[i], labels, training=False, image_size=16, batch_size=5)
+    cached = make_dataset(lambda i: blobs[i], labels, training=False, image_size=16,
+                          batch_size=5, cache=str(tmp_path / "c" / "val"))
+    for _ in range(2):  # second pass reads from the cache file
+        a = np.concatenate([x.numpy() for x, _ in plain])
+        b = np.concatenate([x.numpy() for x, _ in cached])
+        assert np.array_equal(a, b)
+
+
+def test_cached_training_pipeline_reshuffles_each_epoch(tmp_path):
+    """With a cache, training data still comes in a different order every epoch."""
+    import numpy as np
+
+    from src.data import make_dataset
+
+    labels = np.arange(64)
+    blobs = []
+    import io
+
+    from PIL import Image
+    for i in range(64):
+        buf = io.BytesIO()
+        Image.fromarray(np.full((8, 8, 3), i, np.uint8)).save(buf, "PNG")
+        blobs.append(buf.getvalue())
+    ds = make_dataset(lambda i: blobs[i], labels, training=True, image_size=8, batch_size=64,
+                      cache=str(tmp_path / "train"), shuffle_buffer=64)
+    first = next(iter(ds))[1].numpy()
+    second = next(iter(ds))[1].numpy()
+    assert sorted(first) == list(range(64)) and not np.array_equal(first, second)

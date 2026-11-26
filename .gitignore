@@ -1,6 +1,7 @@
 # data and large artifacts stay out of git
 data/raw/
 data/processed/
+data/cache/
 models/*.keras
 models/*.pkl
 !models/.gitkeep

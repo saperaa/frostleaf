@@ -3,11 +3,12 @@ seed: 42
 data:
   source: plantvillage        # Hugging Face: mohanty/PlantVillage
   variant: color              # color | segmented | grayscale
-  image_size: 224
+  image_size: 160             # Colab T4 timing (#11): 224 px fits only 4 epochs of Model C in 30 min
   val_fraction: 0.15          # carved from the official train split, grouped by leaf
   train_fraction_used: 1.0    # set < 1.0 for the low-data setting
   augmentation: [flip, rotate]
   class_weights: true
+  cache: true                 # cache decoded images in data/cache/ after the first epoch
 model:
   name: model_c_finetune      # model_a_scratch | model_b_frozen | model_c_finetune
   dropout: 0.3
