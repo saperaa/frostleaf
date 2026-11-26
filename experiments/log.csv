@@ -1,0 +1,1 @@
+run_id,date,author,model,precision,optimizer,lr,batch_size,weight_decay,decay_mode,augmentation,class_weights,seed,epochs_run,train_time_s,params,train_loss,val_loss,train_macro_f1,val_macro_f1,val_plantdoc_macro_f1,mean_freeze_rate,mean_update_ratio,config_file,notes

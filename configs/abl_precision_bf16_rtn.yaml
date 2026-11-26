@@ -1,0 +1,4 @@
+# Ablation: pure bf16 weight storage (round-to-nearest). Everything else = base.yaml
+inherit: base.yaml
+precision:
+  mode: bf16_rtn
