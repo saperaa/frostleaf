@@ -28,7 +28,7 @@ import keras
 import numpy as np
 from sklearn.datasets import make_classification
 
-from src.precision import PrecisionModel
+from src.precision import PrecisionModel, round_to_bf16
 
 SEED = 42
 OUT_CSV = os.path.join(os.path.dirname(__file__), "sanity_bf16_freeze.csv")
@@ -41,7 +41,9 @@ def build(precision: str) -> PrecisionModel:
     h = keras.layers.Dense(64, activation="relu")(inputs)
     h = keras.layers.Dense(64, activation="relu")(h)
     outputs = keras.layers.Dense(3, activation="softmax")(h)
-    return PrecisionModel(inputs, outputs, precision=precision)
+    # The rounding seed follows the run seed, so a different seed also changes
+    # the stochastic-rounding noise (otherwise every seed shares one pattern).
+    return PrecisionModel(inputs, outputs, precision=precision, rounding_seed=SEED)
 
 
 def make_optimizer(name: str, lr: float) -> keras.optimizers.Optimizer:
@@ -79,7 +81,9 @@ def main() -> None:
         n_samples=4000, n_features=20, n_informative=10, n_classes=3, random_state=SEED
     )
     x = x.astype("float32")
-    init_weights = build("fp32").get_weights()
+    # Round the shared start to bf16 once, so the fp32 run starts from exactly the
+    # same weights as the bf16 runs and gap_fp32 measures training, not the start.
+    init_weights = [round_to_bf16(w).numpy() for w in build("fp32").get_weights()]
 
     rows = []
     for opt in ("sgd", "sgd_momentum", "adam"):
