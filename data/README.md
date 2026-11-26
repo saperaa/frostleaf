@@ -26,7 +26,7 @@ All 28 `plantvillage_class` names in `plantdoc_class_map.csv` match a label name
 ## Leakage findings (PlantVillage colour)
 - Several photos per leaf: the 43,596 official-train images come from 16,124 `leaf_id`s. 9,595 leaves have 1 photo, 344 have 2, 109 have 3, 4,416 have 4, and 1,660 have 5 to 33. Splitting by image would put photos of one leaf in both train and validation.
 - **The official split is not fully leaf-disjoint: 227 `leaf_id`s are in both official train and official test** (290 train images). These train images are dropped.
-- No official-train image is byte-identical to a test image. 14 exact duplicate copies inside train were removed (none carried two labels). Test holds 2 duplicate copies; it is left untouched.
+- 5 official-train images are byte-identical to a test image (found in the EDA, `notebooks/01_eda.ipynb`). All 5 belong to leaves shared with test, so they are already among the 290 dropped train images; none remains in our train or validation split. 14 exact duplicate copies inside train were removed (none carried two labels). Test holds 2 duplicate copies; it is left untouched.
 - 10,518 train and 2,676 test rows have no entry in the dataset's leaf map and get a `fallback_<file id>` leaf ID, so each is treated as its own leaf. This is the best the source data allows; the hash check still guarantees no identical file crosses splits.
 - `check_no_leakage` passes on the committed split: no shared `leaf_id` and no shared file hash between any two splits. `tests/test_data.py` shows the check catches a planted shared leaf and a planted identical file.
 
