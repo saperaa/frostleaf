@@ -86,3 +86,134 @@ def test_separate_decay_is_swallowed_but_fused_is_not():
         model.fit(x, y, batch_size=64, epochs=3, shuffle=False, verbose=0)
         finals[mode] = model.get_weights()[0]
     assert not np.array_equal(finals["fused"], finals["separate"])
+
+
+def _tiny_regression_data(n=64, mean=0.0):
+    """Small deterministic regression problem: y = sum(x)."""
+    x = np.random.default_rng(0).normal(loc=mean, size=(n, 4)).astype("float32")
+    return x, x.sum(axis=1, keepdims=True)
+
+
+def _fit_two_layer(variable_groups_fn=None, steps=4):
+    """Train a fixed-seed backbone/head model; return (model, last-epoch metrics)."""
+    import keras
+
+    from src.precision import PrecisionModel
+
+    keras.utils.set_random_seed(0)
+    inputs = keras.Input(shape=(4,))
+    # Backbone weights are large (in [4, 8): half a bf16 ULP = 2**-6), head
+    # weights are small (~0.015: half ULP ~3e-5), so an Adam step of ~1e-4
+    # vanishes in the backbone but survives in the head.
+    backbone = keras.layers.Dense(
+        4, use_bias=False, kernel_initializer=keras.initializers.RandomUniform(4.0, 7.9)
+    )
+    head = keras.layers.Dense(1, kernel_initializer=keras.initializers.RandomUniform(0.01, 0.015))
+    groups = variable_groups_fn(backbone, head) if variable_groups_fn else None
+    model = PrecisionModel(
+        inputs, head(backbone(inputs)), precision="bf16_rtn", variable_groups=groups
+    )
+    model.compile(optimizer=keras.optimizers.Adam(1e-4), loss="mse")
+    model.quantize_weights()
+    x, y = _tiny_regression_data()
+    history = model.fit(x, y, batch_size=64 // steps, epochs=1, shuffle=False, verbose=0)
+    return model, {k: v[-1] for k, v in history.history.items()}
+
+
+def test_default_metrics_unchanged_without_groups():
+    """Without variable_groups the metrics are as before; with them, overall values match."""
+    _, plain = _fit_two_layer()
+    assert set(plain) == {"loss", "freeze_rate", "update_ratio"}
+    _, grouped = _fit_two_layer(lambda b, h: {"backbone": [b], "head": [h]})
+    for key in plain:  # grouping only adds metrics; it never changes training
+        assert grouped[key] == plain[key]
+
+
+def test_head_and_backbone_freeze_differently():
+    """Large backbone weights freeze at lr 1e-4 while small head weights keep learning."""
+    _, metrics = _fit_two_layer(lambda b, h: {"backbone": [b], "head": [h]})
+    assert {"freeze_rate_backbone", "update_ratio_backbone",
+            "freeze_rate_head", "update_ratio_head"} <= set(metrics)
+    assert metrics["freeze_rate_backbone"] == 1.0  # every backbone update lost
+    assert metrics["update_ratio_backbone"] == 0.0
+    assert metrics["freeze_rate_head"] < 0.5  # most head updates survive
+    assert metrics["freeze_rate_head"] < metrics["freeze_rate"] < 1.0
+
+
+def test_variable_in_two_groups_is_rejected():
+    """A variable may belong to at most one group."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        _fit_two_layer(lambda b, h: {"a": [b, h], "b": [h]})
+
+
+def test_batchnorm_stats_frozen_with_training_false():
+    """BatchNorm called with training=False must keep its moving statistics.
+
+    PrecisionModel only rounds trainable weights; moving_mean/moving_variance
+    are updated by the layer itself. Model C relies on training=False to keep
+    the ImageNet statistics: if they drifted, the fine-tuned model would be
+    evaluated with different normalisation than it was trained with.
+    """
+    import keras
+
+    from src.precision import PrecisionModel
+
+    def build(bn_training):
+        """Tiny Dense -> BatchNorm -> Dense model; return it and its BN layer."""
+        keras.utils.set_random_seed(0)
+        inputs = keras.Input(shape=(4,))
+        bn = keras.layers.BatchNormalization()
+        hidden = bn(keras.layers.Dense(8)(inputs), training=bn_training)
+        model = PrecisionModel(inputs, keras.layers.Dense(1)(hidden), precision="bf16_rtn")
+        model.compile(optimizer="adam", loss="mse")
+        model.quantize_weights()
+        return model, bn
+
+    x, y = _tiny_regression_data(n=80, mean=5.0)  # mean far from BN's initial 0
+
+    model, bn = build(bn_training=False)
+    before = [bn.moving_mean.numpy().copy(), bn.moving_variance.numpy().copy()]
+    model.fit(x, y, batch_size=16, epochs=1, shuffle=False, verbose=0)  # 5 steps
+    assert model.optimizer.iterations.numpy() == 5
+    np.testing.assert_array_equal(bn.moving_mean.numpy(), before[0])
+    np.testing.assert_array_equal(bn.moving_variance.numpy(), before[1])
+
+    # Control: without training=False the same 5 steps DO move the statistics,
+    # so the assertions above would catch the bug.
+    model, bn = build(bn_training=None)
+    before_mean = bn.moving_mean.numpy().copy()
+    model.fit(x, y, batch_size=16, epochs=1, shuffle=False, verbose=0)
+    assert not np.array_equal(bn.moving_mean.numpy(), before_mean)
+
+
+def test_nested_base_training_false_but_dropout_still_active():
+    """Model C pattern: base(x, training=False) then a Dropout head.
+
+    The nested base model's BatchNorm statistics must stay fixed, while the
+    head's Dropout (built without an explicit training flag) must still be
+    active during fit().
+    """
+    import keras
+
+    from src.precision import PrecisionModel
+
+    keras.utils.set_random_seed(0)
+    base_in = keras.Input(shape=(4,))
+    bn = keras.layers.BatchNormalization()
+    base = keras.Model(base_in, bn(keras.layers.Dense(8)(base_in)))
+
+    inputs = keras.Input(shape=(4,))
+    hidden = keras.layers.Dropout(0.5)(base(inputs, training=False))
+    model = PrecisionModel(inputs, keras.layers.Dense(1)(hidden), precision="bf16_rtn")
+    model.compile(optimizer="adam", loss="mse")
+    model.quantize_weights()
+
+    x, y = _tiny_regression_data(n=80, mean=5.0)
+    model.fit(x, y, batch_size=16, epochs=1, shuffle=False, verbose=0)
+    np.testing.assert_array_equal(bn.moving_mean.numpy(), np.zeros(8, "float32"))
+
+    in_training = model(x[:8], training=True).numpy()
+    in_inference = model(x[:8], training=False).numpy()
+    assert not np.allclose(in_training, in_inference)  # dropout is on in training
