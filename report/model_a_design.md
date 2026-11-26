@@ -1,4 +1,4 @@
-# Model A design: custom CNN from scratch (Phase 2)
+# Model A design: custom CNN from scratch (Phase 2, updated for 160 px)
 
 Model A is the "trained from scratch" arm of H1. Its learning rate (1e-3) is
 large compared with half a bf16 step of its weights, so it should be far less
@@ -9,16 +9,15 @@ fixes the design so that the parameter counts can be checked against
 
 ## Architecture
 
-Input 224 × 224 × 3 (RGB), 38 output classes. Four identical conv blocks,
+Input 160 × 160 × 3 (RGB, pixels already in [0, 1] from `src.data.preprocess`), 38 output classes. Four identical conv blocks,
 then a small classifier head:
 
 ```
-image 224x224x3
-  -> Rescaling(1/255)
-  -> [ Conv 3x3, 32  -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 1  -> 112x112x32
-  -> [ Conv 3x3, 64  -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 2  ->  56x56x64
-  -> [ Conv 3x3, 128 -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 3  ->  28x28x128
-  -> [ Conv 3x3, 256 -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 4  ->  14x14x256
+image 160x160x3 (already scaled to [0, 1])
+  -> [ Conv 3x3, 32  -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 1  ->  80x80x32
+  -> [ Conv 3x3, 64  -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 2  ->  40x40x64
+  -> [ Conv 3x3, 128 -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 3  ->  20x20x128
+  -> [ Conv 3x3, 256 -> BatchNorm -> ReLU -> MaxPool 2x2 ]   block 4  ->  10x10x256
   -> GlobalAveragePooling2D                                           ->  256
   -> Dropout(0.3)                                                     ->  256
   -> Dense(38, softmax)                                               ->  38
@@ -35,31 +34,30 @@ Formulas:
 - BatchNorm: 4 × C (γ and β are trainable; the moving mean and moving variance
   are not)
 - Dense: n_in × n_out + n_out
-- Rescaling, ReLU, MaxPool, GlobalAveragePooling and Dropout have no parameters
+- ReLU, MaxPool, GlobalAveragePooling and Dropout have no parameters
 
 | # | Layer | Output shape | Hand count | Params |
 |---|---|---|---|---:|
-| 0 | Input | 224 × 224 × 3 | – | 0 |
-| 1 | Rescaling 1/255 | 224 × 224 × 3 | – | 0 |
-| 2 | block1 Conv 3×3, 32 | 224 × 224 × 32 | 3·3·3·32 + 32 = 864 + 32 | 896 |
-| 3 | block1 BatchNorm | 224 × 224 × 32 | 4 · 32 | 128 |
-| 4 | block1 ReLU | 224 × 224 × 32 | – | 0 |
-| 5 | block1 MaxPool 2×2 | 112 × 112 × 32 | – | 0 |
-| 6 | block2 Conv 3×3, 64 | 112 × 112 × 64 | 3·3·32·64 + 64 = 18,432 + 64 | 18,496 |
-| 7 | block2 BatchNorm | 112 × 112 × 64 | 4 · 64 | 256 |
-| 8 | block2 ReLU | 112 × 112 × 64 | – | 0 |
-| 9 | block2 MaxPool 2×2 | 56 × 56 × 64 | – | 0 |
-| 10 | block3 Conv 3×3, 128 | 56 × 56 × 128 | 3·3·64·128 + 128 = 73,728 + 128 | 73,856 |
-| 11 | block3 BatchNorm | 56 × 56 × 128 | 4 · 128 | 512 |
-| 12 | block3 ReLU | 56 × 56 × 128 | – | 0 |
-| 13 | block3 MaxPool 2×2 | 28 × 28 × 128 | – | 0 |
-| 14 | block4 Conv 3×3, 256 | 28 × 28 × 256 | 3·3·128·256 + 256 = 294,912 + 256 | 295,168 |
-| 15 | block4 BatchNorm | 28 × 28 × 256 | 4 · 256 | 1,024 |
-| 16 | block4 ReLU | 28 × 28 × 256 | – | 0 |
-| 17 | block4 MaxPool 2×2 | 14 × 14 × 256 | – | 0 |
-| 18 | GlobalAveragePooling2D | 256 | – | 0 |
-| 19 | Dropout 0.3 | 256 | – | 0 |
-| 20 | Dense 38, softmax | 38 | 256·38 + 38 = 9,728 + 38 | 9,766 |
+| 0 | Input | 160 × 160 × 3 | – | 0 |
+| 1 | block1 Conv 3×3, 32 | 160 × 160 × 32 | 3·3·3·32 + 32 = 864 + 32 | 896 |
+| 2 | block1 BatchNorm | 160 × 160 × 32 | 4 · 32 | 128 |
+| 3 | block1 ReLU | 160 × 160 × 32 | – | 0 |
+| 4 | block1 MaxPool 2×2 | 80 × 80 × 32 | – | 0 |
+| 5 | block2 Conv 3×3, 64 | 80 × 80 × 64 | 3·3·32·64 + 64 = 18,432 + 64 | 18,496 |
+| 6 | block2 BatchNorm | 80 × 80 × 64 | 4 · 64 | 256 |
+| 7 | block2 ReLU | 80 × 80 × 64 | – | 0 |
+| 8 | block2 MaxPool 2×2 | 40 × 40 × 64 | – | 0 |
+| 9 | block3 Conv 3×3, 128 | 40 × 40 × 128 | 3·3·64·128 + 128 = 73,728 + 128 | 73,856 |
+| 10 | block3 BatchNorm | 40 × 40 × 128 | 4 · 128 | 512 |
+| 11 | block3 ReLU | 40 × 40 × 128 | – | 0 |
+| 12 | block3 MaxPool 2×2 | 20 × 20 × 128 | – | 0 |
+| 13 | block4 Conv 3×3, 256 | 20 × 20 × 256 | 3·3·128·256 + 256 = 294,912 + 256 | 295,168 |
+| 14 | block4 BatchNorm | 20 × 20 × 256 | 4 · 256 | 1,024 |
+| 15 | block4 ReLU | 20 × 20 × 256 | – | 0 |
+| 16 | block4 MaxPool 2×2 | 10 × 10 × 256 | – | 0 |
+| 17 | GlobalAveragePooling2D | 256 | – | 0 |
+| 18 | Dropout 0.3 | 256 | – | 0 |
+| 19 | Dense 38, softmax | 38 | 256·38 + 38 = 9,728 + 38 | 9,766 |
 
 Totals:
 
@@ -72,36 +70,36 @@ Totals:
 | **Trainable** | 400,102 − 960 = **399,142** | 399,142 |
 | **Non-trainable** (moving mean + variance: 2 × (32+64+128+256)) | **960** | 960 |
 
-Checked on 2026-11-25 with Keras 3.15.1: every per-layer count and all three
-totals match `model.summary()`. The counts are the same at 160 px, because no
-layer's parameters depend on the image size (see global average pooling below).
+Checked on 2026-11-25 with Keras 3.15.1 at 224 px, and again at 160 px without
+the Rescaling layer (2026-11-26): every per-layer count and all three totals
+match `model.summary()`. No layer's parameters depend on the image size (see
+global average pooling below), so the counts are identical at both sizes.
 
 ## Why each choice
 
-- **224 × 224 × 3 input.** This is the same input as ResNet-50 in Models B and
-  C, so all three models see identical images and differ only in architecture
-  and training. If the Colab timing notebook moves the project to 160 px,
-  Model A needs no change.
-- **Rescaling 1/255 inside the model.** This maps pixels to [0, 1] with a fixed
-  constant. Nothing is fitted, so it cannot leak validation or test
-  information. The saved model also accepts raw pixels, which keeps the Gradio
-  app simple. The data pipeline must therefore feed unnormalised 0–255 images
-  to Model A.
+- **160 × 160 × 3 input.** The Colab timing (#11) moved the project from 224 px
+  to 160 px so that Model C fits 8 epochs in a 30-minute run. All three models
+  see the same 160 px images and differ only in architecture and training.
+- **No rescaling layer.** `src.data.preprocess` already scales pixels to
+  [0, 1], and it is the one preprocessing shared by training and `predict.py`.
+  An extra Rescaling(1/255) here would divide by 255 twice and feed the network
+  near-zero inputs. (An earlier version of this note had one; removed
+  2026-11-26.) Nothing is fitted, so there is no leakage either way.
 - **3 × 3 kernels, stride 1, `same` padding.** Stacked 3 × 3 convolutions see
   as far as one larger kernel with fewer parameters: two 3 × 3 layers cover
   5 × 5 with 18·C² weights instead of 25·C². `same` padding keeps the size
-  halving cleanly at each pool, 224 → 112 → 56 → 28 → 14.
+  halving cleanly at each pool, 160 → 80 → 40 → 20 → 10.
 - **Four blocks (the top of the 3–4 range).** Each block grows the receptive
   field. After 3 blocks a feature sees only 22 × 22 px; after 4 it sees
-  46 × 46 px, about a fifth of the leaf image. That is enough to cover a whole
+  46 × 46 px, about 29% of the 160 px image's width. That is enough to cover a whole
   lesion, ring or spot pattern. The 4th block costs 295k parameters but adds
   the 256 high-level features the head classifies from. A 5th block would
-  shrink the map to 7 × 7 and add about 1.2M parameters, which is more than
+  shrink the map to 5 × 5 and add about 1.2M parameters, which is more than
   this budget allows.
 - **Filters 32 → 64 → 128 → 256 (doubling).** Each pool divides the number of
   positions by 4, and doubling the filters multiplies the conv cost by 4, so
-  blocks 2–4 cost the same (≈ 231M multiply-adds each). No block is a
-  bottleneck. Block 1 starts small (32) because it runs at full 224 × 224
+  blocks 2–4 cost the same (≈ 118M multiply-adds each at 160 px). No block is a
+  bottleneck. Block 1 starts small (32) because it runs at full 160 × 160
   resolution, where activations take the most memory.
 - **BatchNorm between conv and ReLU.** BatchNorm keeps the pre-activation
   scale stable while every weight changes. That allows the relatively large
@@ -118,9 +116,9 @@ layer's parameters depend on the image size (see global average pooling below).
 - **MaxPool 2 × 2.** Max pooling halves the resolution with no parameters. It
   keeps the strongest local response, which suits disease spots: whether a
   spot is present matters more than exactly where it is.
-- **Global average pooling instead of Flatten.** Flatten of the 14 × 14 × 256
-  map gives 50,176 features, and a Dense(38) on it would have
-  50,176 · 38 + 38 = 1,906,726 parameters. That is 4.8× the rest of the model
+- **Global average pooling instead of Flatten.** Flatten of the 10 × 10 × 256
+  map gives 25,600 features, and a Dense(38) on it would have
+  25,600 · 38 + 38 = 972,838 parameters. That is 2.5× the rest of the model
   and would overfit badly. GAP averages each of the 256 feature maps to one
   number, so the head has 9,766 parameters. GAP also makes the parameter
   count independent of the image size (the same weights work at 160 or
@@ -151,26 +149,19 @@ of the network freezes first.
 
 ## Training budget (target: under 30 minutes on a Colab T4)
 
-These are estimates. The Experimentation Engineer's
-`notebooks/00_colab_timing.ipynb` measures the real numbers.
-
-- **Compute.** A forward pass costs ≈ 0.74G multiply-adds per image
-  (43M + 3 × 231M), about 1/6 of ResNet-50 (≈ 4.1G). Training is about 3× the
-  forward pass, so ≈ 4.4 GFLOP per image, or ≈ 155 TFLOP per epoch of
-  35,000 images. At a realistic 2–3 TFLOPS on a T4 (8.1 TFLOPS fp32 peak),
-  that is ≈ 50–80 s per epoch, plus input-pipeline time.
-- **Memory.** The activations kept for backprop (conv, BN, ReLU and pool
-  outputs, float32) take ≈ 40 MB per image, mostly in block 1, so ≈ 1.3 GB
-  for a batch of 32. This fits easily in 16 GB.
-- **Plan.** Allow ≈ 2 min per epoch at 224 px, which gives about 15 epochs in
-  30 minutes. Early stopping (patience 5) usually ends sooner. At 160 px the
-  compute halves ((160/224)² ≈ 0.51), which allows about 25–30 epochs.
+Measured by the Experimentation Engineer in `notebooks/00_colab_timing.ipynb`
+(#11): at 224 px Model A took 0.272 s per step, about 306 s per epoch including
+validation, and the input pipeline, not the model, set that speed. At 160 px the
+compute roughly halves ((160/224)² ≈ 0.51) and the decoded-image cache (#13)
+removes most of the input cost after the first epoch, so 30 minutes allows
+roughly 6–10 epochs; early stopping (patience 5) may end sooner.
 
 ## Reference build (to become `build_model_a_scratch` in Phase 3)
 
 ```python
-inputs = keras.Input(shape=(224, 224, 3), name="image")
-x = keras.layers.Rescaling(1.0 / 255, name="rescale")(inputs)
+size = cfg["data"]["image_size"]                    # 160
+inputs = keras.Input(shape=(size, size, 3), name="image")  # already in [0, 1]
+x = inputs
 for i, filters in enumerate((32, 64, 128, 256), start=1):
     x = keras.layers.Conv2D(filters, 3, padding="same",
                             kernel_initializer="he_normal", name=f"block{i}_conv")(x)
