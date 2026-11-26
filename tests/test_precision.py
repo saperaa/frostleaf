@@ -217,3 +217,27 @@ def test_nested_base_training_false_but_dropout_still_active():
     in_training = model(x[:8], training=True).numpy()
     in_inference = model(x[:8], training=False).numpy()
     assert not np.allclose(in_training, in_inference)  # dropout is on in training
+
+
+def test_train_step_compiles_with_xla_and_matches_eager_graph():
+    """jit_compile=True (Keras' GPU default on Colab) must work and give the same
+    weights as the non-XLA step: stochastic rounding uses stateless seeds."""
+    import keras
+    import numpy as np
+
+    from src.precision import PrecisionModel
+
+    x = np.random.default_rng(0).normal(size=(256, 8)).astype("float32")
+    y = (x[:, 0] > 0).astype("int32")
+    finals = {}
+    for jit in (False, True):
+        keras.utils.set_random_seed(0)
+        inputs = keras.Input(shape=(8,))
+        model = PrecisionModel(inputs, keras.layers.Dense(2, activation="softmax")(inputs),
+                               precision="bf16_sr", rounding_seed=3)
+        model.compile(optimizer=keras.optimizers.Adam(1e-3),
+                      loss="sparse_categorical_crossentropy", jit_compile=jit)
+        model.quantize_weights()
+        model.fit(x, y, batch_size=32, epochs=2, shuffle=False, verbose=0)
+        finals[jit] = model.get_weights()[0]
+    assert np.array_equal(finals[False], finals[True])
