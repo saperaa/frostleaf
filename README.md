@@ -50,5 +50,13 @@ report/       report PDF + slides
 tests/        pytest unit tests
 ```
 
+## Baselines (validation split)
+Every model is reported as an improvement over these numbers. Produced by `python -m src.baselines --author <name>`.
+
+| Baseline | Input | Val macro-F1 | Val accuracy |
+|---|---|---|---|
+| Majority class | none | TBD | TBD |
+| Logistic regression (balanced) | 32 x 32 x 3 pixels, standardised on train | TBD | TBD |
+
 ## Results
 Filled in at the end of Phase 4.
