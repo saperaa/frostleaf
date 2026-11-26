@@ -1,0 +1,4 @@
+# Ablation: pure bf16 weight storage with stochastic rounding. Everything else = base.yaml
+inherit: base.yaml
+precision:
+  mode: bf16_sr
