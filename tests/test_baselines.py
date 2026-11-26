@@ -58,3 +58,40 @@ def test_run_baselines_learned_beats_majority(tmp_path):
     assert os.path.exists(tmp_path / "baseline_results.json")
     assert os.path.exists(tmp_path / "logistic_regression_val_cm.png")
     json.loads((tmp_path / "baseline_results.json").read_text())
+
+
+def test_run_baselines_logs_two_rows_through_append_run(tmp_path):
+    """Both baselines are logged with the real log header, one row each."""
+    import csv
+
+    from src.experiment_log import LOG_CSV
+
+    log = tmp_path / "log.csv"
+    log.write_text(open(LOG_CSV).readline())  # header only
+    rng = np.random.default_rng(4)
+    x, y = rng.normal(size=(120, 6)), rng.integers(0, 3, 120)
+    run_baselines(x[:90], y[:90], x[90:], y[90:], list("abc"), "test",
+                  out_dir=str(tmp_path / "out"), log_csv=str(log))
+    rows = list(csv.DictReader(open(log)))
+    assert [r["model"] for r in rows] == ["baseline_majority_class", "baseline_logistic_regression"]
+    assert len({r["run_id"] for r in rows}) == 2
+
+
+def test_main_loads_plantvillage_without_augmentation(monkeypatch):
+    """Baselines must train on plain images, never on augmented ones."""
+    import src.baselines as baselines
+    import src.data
+
+    seen = {}
+
+    def fake_load(variant, cfg=None):
+        seen["augmentation"] = cfg["data"]["augmentation"]
+        raise SystemExit  # stop before any real data is needed
+
+    monkeypatch.setattr(src.data, "load_plantvillage", fake_load)
+    monkeypatch.setattr("sys.argv", ["baselines", "--author", "test"])
+    try:
+        baselines.main()
+    except SystemExit:
+        pass
+    assert seen["augmentation"] == []

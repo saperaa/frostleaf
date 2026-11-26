@@ -8,8 +8,9 @@ Owner: Tech Lead.
   with balanced class weights.
 
 Both are scored on VALIDATION only; the test split is not touched until the
-results are frozen (Phase 4). Results go to experiments/baselines/ and, once
-experiments/log.csv exists, one row per baseline is appended to it.
+results are frozen (Phase 4). Both see plain (non-augmented) images. Results go to experiments/baselines/
+and one row per baseline is appended to experiments/log.csv via
+src.experiment_log.append_run.
 
 Usage (after the data pipeline in src/data.py is merged):
     python -m src.baselines --author mohamed
@@ -19,7 +20,6 @@ Usage (after the data pipeline in src/data.py is merged):
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import json
 import os
@@ -27,13 +27,13 @@ import time
 
 import numpy as np
 
-from src.config import PROJECT_ROOT
+from src.config import PROJECT_ROOT, load_config
 from src.evaluate import evaluate, plot_confusion_matrix
+from src.experiment_log import LOG_CSV, append_run, make_run_id
 from src.models import full_width_proba, logistic_regression_baseline, majority_class_baseline
 
 BASELINE_SIZE = 32  # pixels per side for the logistic-regression input
 OUT_DIR = os.path.join(PROJECT_ROOT, "experiments", "baselines")
-LOG_CSV = os.path.join(PROJECT_ROOT, "experiments", "log.csv")
 
 
 def dataset_to_arrays(dataset, size: int = BASELINE_SIZE, limit: int | None = None):
@@ -67,18 +67,6 @@ def dataset_to_arrays(dataset, size: int = BASELINE_SIZE, limit: int | None = No
         feats.append(x.numpy())
         labels.append(y.numpy())
     return np.concatenate(feats).astype(np.float32), np.concatenate(labels).astype(np.int64)
-
-
-def _append_log_row(row: dict, log_csv: str | None = LOG_CSV) -> bool:
-    """Append ``row`` to the experiment log, matching its header. Skip if absent."""
-    if log_csv is None or not os.path.exists(log_csv):
-        print(f"note: no experiment log at {log_csv}; result kept in the output folder only")
-        return False
-    with open(log_csv, newline="") as f:
-        header = next(csv.reader(f))
-    with open(log_csv, "a", newline="") as f:
-        csv.DictWriter(f, fieldnames=header, extrasaction="ignore").writerow(row)
-    return True
 
 
 def run_baselines(train_x, train_y, val_x, val_y, class_names: list[str], author: str,
@@ -121,8 +109,8 @@ def run_baselines(train_x, train_y, val_x, val_y, class_names: list[str], author
             "val_roc_auc_macro": float(val_m["roc_auc_macro"]),
             "val_per_class_recall": {c: m["recall"] for c, m in val_m["per_class"].items()},
         }
-        _append_log_row({
-            "run_id": f"baseline_{name}_{date}",
+        row = {
+            "run_id": make_run_id(f"baseline-{name.replace('_', '-')}", "ref", 42),
             "date": date,
             "author": author,
             "model": f"baseline_{name}",
@@ -134,7 +122,9 @@ def run_baselines(train_x, train_y, val_x, val_y, class_names: list[str], author
             "train_macro_f1": round(summary[name]["train_macro_f1"], 4),
             "val_macro_f1": round(summary[name]["val_macro_f1"], 4),
             "notes": f"{BASELINE_SIZE}x{BASELINE_SIZE} pixels" if params else "",
-        }, log_csv)
+        }
+        if log_csv is not None:
+            append_run(row, path=log_csv)
         print(f"{name:<20} val macro-F1 {summary[name]['val_macro_f1']:.4f}  "
               f"val acc {summary[name]['val_accuracy']:.4f}  ({train_time:.0f}s)")
 
@@ -153,7 +143,11 @@ def main() -> None:
 
     from src.data import load_plantvillage
 
-    train_ds, val_ds, _test_ds, class_names = load_plantvillage(args.variant)  # test unused
+    # Baselines must see plain images: switch augmentation off (load_plantvillage
+    # otherwise flips and rotates the train split on every pass).
+    cfg = load_config("base.yaml")
+    cfg["data"]["augmentation"] = []
+    train_ds, val_ds, _test_ds, class_names = load_plantvillage(args.variant, cfg=cfg)  # test unused
     train_x, train_y = dataset_to_arrays(train_ds, limit=args.limit)
     val_x, val_y = dataset_to_arrays(val_ds, limit=args.limit)
     run_baselines(train_x, train_y, val_x, val_y, list(class_names), args.author)
