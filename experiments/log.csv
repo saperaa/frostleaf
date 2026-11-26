@@ -1,1 +1,3 @@
 run_id,date,author,model,precision,optimizer,lr,batch_size,weight_decay,decay_mode,augmentation,class_weights,seed,epochs_run,train_time_s,params,train_loss,val_loss,train_macro_f1,val_macro_f1,val_plantdoc_macro_f1,mean_freeze_rate,mean_update_ratio,config_file,notes
+20261126-1316-baseline-majority-class-ref-s42,2026-11-26,mohamed,baseline_majority_class,fp32,,,,,,,none,42,,0.1,0,,,0.005,0.005,,,,,
+20261126-1320-baseline-logistic-regression-ref-s42,2026-11-26,mohamed,baseline_logistic_regression,fp32,,,,,,,balanced,42,,277.2,116774,,,0.984,0.6167,,,,,32x32 pixels

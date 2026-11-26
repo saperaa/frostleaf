@@ -51,12 +51,12 @@ tests/        pytest unit tests
 ```
 
 ## Baselines (validation split)
-Every model is reported as an improvement over these numbers. Produced by `python -m src.baselines --author <name>`.
+Every model is reported as an improvement over these numbers. Produced by `python -m src.baselines --author <name>` on 34,633 train / 8,659 validation images (plain images, no augmentation). The logistic regression overfits (train macro-F1 0.984 vs 0.617 validation) and stopped at its 300-iteration limit before converging; its validation one-vs-rest ROC-AUC is 0.967. Details: `experiments/baselines/`.
 
 | Baseline | Input | Val macro-F1 | Val accuracy |
 |---|---|---|---|
-| Majority class | none | TBD | TBD |
-| Logistic regression (balanced) | 32 x 32 x 3 pixels, standardised on train | TBD | TBD |
+| Majority class | none | 0.005 | 10.5% |
+| Logistic regression (balanced) | 32 x 32 x 3 pixels, standardised on train | **0.617** | 69.0% |
 
 ## Results
 Filled in at the end of Phase 4.
